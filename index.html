@@ -481,42 +481,62 @@ function fetchAll(){
   });
 }
 
-// 寫入用 no-cors fetch（無法讀回應，但資料會寫入）
-async function pushSite(site,silent=false){
-  const url=getApiUrl();
-  if(!url)return;
-  if(!silent)setSyncStatus('syncing','上傳中…');
-  try{
-    await fetch(url,{
-      method:'POST',
-      mode:'no-cors',
-      headers:{'Content-Type':'text/plain'},
-      body:JSON.stringify({action:'save',site})
-    });
-    if(!silent){
-      setTimeout(async()=>{
-        const ok=await fetchAll();
-        if(ok)renderList();
-      },1500);
-    }
-  }catch(e){if(!silent)setSyncStatus('err','上傳失敗，已存本機')}
+// 用 JSONP GET 寫入資料（繞過 CORS）
+function jsonpRequest(url, params, onSuccess, onError){
+  const cbName='_gsCb'+Date.now()+Math.random().toString(36).slice(2,6);
+  const script=document.createElement('script');
+  const timer=setTimeout(()=>{
+    cleanup();
+    if(onError)onError('timeout');
+  },15000);
+  function cleanup(){
+    clearTimeout(timer);
+    delete window[cbName];
+    if(script.parentNode)script.parentNode.removeChild(script);
+  }
+  window[cbName]=function(d){
+    cleanup();
+    if(onSuccess)onSuccess(d);
+  };
+  script.onerror=function(){
+    cleanup();
+    if(onError)onError('error');
+  };
+  const qs=Object.entries(params).map(([k,v])=>k+'='+encodeURIComponent(typeof v==='object'?JSON.stringify(v):v)).join('&');
+  script.src=url+'?callback='+cbName+'&'+qs+'&_='+Date.now();
+  document.head.appendChild(script);
 }
 
-async function pushDelete(id){
+function pushSite(site,silent=false){
   const url=getApiUrl();
-  if(!url)return;
-  try{
-    await fetch(url,{
-      method:'POST',
-      mode:'no-cors',
-      headers:{'Content-Type':'text/plain'},
-      body:JSON.stringify({action:'delete',id})
-    });
-    setTimeout(async()=>{
-      const ok=await fetchAll();
-      if(ok)renderList();
-    },1500);
-  }catch(e){setSyncStatus('err','刪除同步失敗')}
+  if(!url)return Promise.resolve();
+  if(!silent)setSyncStatus('syncing','上傳中…');
+  return new Promise(resolve=>{
+    jsonpRequest(url,{action:'save',site},
+      function(d){
+        if(!silent){
+          if(d&&d.ok)setSyncStatus('ok','已同步 · '+timeNow());
+          else setSyncStatus('err','上傳失敗');
+        }
+        resolve(d);
+      },
+      function(){
+        if(!silent)setSyncStatus('err','上傳失敗，已存本機');
+        resolve(null);
+      }
+    );
+  });
+}
+
+function pushDelete(id){
+  const url=getApiUrl();
+  if(!url)return Promise.resolve();
+  return new Promise(resolve=>{
+    jsonpRequest(url,{action:'delete',id},
+      function(d){ setSyncStatus('ok','已同步 · '+timeNow()); resolve(d); },
+      function(){ setSyncStatus('err','刪除同步失敗'); resolve(null); }
+    );
+  });
 }
 
 function timeNow(){
