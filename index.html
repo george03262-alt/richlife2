@@ -446,10 +446,18 @@ function fetchAll(){
         // 合併本機與雲端資料，以最新 updatedAt 為準
         const local=JSON.parse(localStorage.getItem(DB_KEY)||'[]');
         const merged={};
+        // 確保布林值正確（雲端可能回傳字串 "true"/"false"）
+        function fixBool(s){
+          s.deleted=(s.deleted===true||s.deleted==='true');
+          s.hasDeposit=(s.hasDeposit===true||s.hasDeposit==='true');
+          s.needBalance=(s.needBalance===true||s.needBalance==='true');
+          return s;
+        }
         // 先放本機
-        local.forEach(s=>{ merged[s.id]=s; });
+        local.forEach(s=>{ merged[s.id]=fixBool(s); });
         // 雲端資料若比本機新則覆蓋，若本機沒有則新增
         d.sites.forEach(s=>{
+          fixBool(s);
           if(!merged[s.id]){
             merged[s.id]=s;
           } else {
