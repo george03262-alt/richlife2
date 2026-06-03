@@ -515,10 +515,20 @@ function jsonpRequest(url, params, onSuccess, onError){
   document.head.appendChild(script);
 }
 
-// 上傳前去掉 files（圖片/PDF base64 太大，只存本機）
+// 上傳前保留已同步到 Cloudinary 的圖片（用雲端URL），去掉純本機 base64
 function stripFiles(site){
   const s=Object.assign({},site);
-  s.files=[];
+  s.files=(site.files||[]).map(f=>{
+    if(f.cloudUrl){
+      // 已上傳到 Cloudinary，只保留 URL，不傳 base64
+      return{name:f.name,size:f.size,type:f.type,dataUrl:f.cloudUrl,cloudUrl:f.cloudUrl};
+    }
+    if(f.type==='pdf'){
+      // PDF 暫時保留本機（無法上傳 Cloudinary 後取代）
+      return null;
+    }
+    return null; // 純本機圖片（上傳中或失敗）不同步
+  }).filter(Boolean);
   return s;
 }
 
@@ -758,29 +768,76 @@ function handleDetailClick(e){if(e.target===document.getElementById('detail-over
 function openLightbox(src){document.getElementById('lightbox-img').src=src;document.getElementById('lightbox').classList.add('open')}
 function closeLightbox(){document.getElementById('lightbox').classList.remove('open')}
 
-// ── FILE UPLOAD ───────────────────────────────────────
+// ── FILE UPLOAD (Cloudinary) ──────────────────────────
+const CLOUDINARY_CLOUD='dm4r4wyse';
+const CLOUDINARY_PRESET='itai_unsigned'; // 需設定 unsigned upload preset
+
 function onDragOver(e){e.preventDefault();document.getElementById('upload-area').classList.add('drag-over')}
 function onDragLeave(){document.getElementById('upload-area').classList.remove('drag-over')}
 function onDrop(e){e.preventDefault();onDragLeave();handleFiles(e.dataTransfer.files)}
+
+async function uploadToCloudinary(file){
+  const fd=new FormData();
+  fd.append('file',file);
+  fd.append('upload_preset',CLOUDINARY_PRESET);
+  fd.append('folder','itai_business');
+  const res=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});
+  const data=await res.json();
+  if(data.secure_url) return data.secure_url;
+  throw new Error(data.error?.message||'上傳失敗');
+}
+
 function handleFiles(fileList){
   const allowed=['image/jpeg','image/jpg','image/png','application/pdf'];
-  Array.from(fileList).forEach(file=>{
+  Array.from(fileList).forEach(async file=>{
     if(!allowed.includes(file.type)){alert(`不支援：${file.name}`);return;}
     if(file.size>10*1024*1024){alert(`超過 10MB：${file.name}`);return;}
+    if(pendingFiles.find(f=>f.name===file.name&&f.size===file.size))return;
+
+    // 先用本地預覽
     const reader=new FileReader();
-    reader.onload=e=>{
-      if(pendingFiles.find(f=>f.name===file.name&&f.size===file.size))return;
-      pendingFiles.push({name:file.name,size:file.size,type:file.type==='application/pdf'?'pdf':'img',dataUrl:e.target.result});
+    reader.onload=async ev=>{
+      const tempId='tmp_'+Date.now();
+      const isPdf=file.type==='application/pdf';
+      const entry={id:tempId,name:file.name,size:file.size,type:isPdf?'pdf':'img',dataUrl:ev.target.result,uploading:true,cloudUrl:''};
+      pendingFiles.push(entry);
       renderFileList();formDirty=true;
+
+      // 上傳到 Cloudinary
+      try{
+        const url=await uploadToCloudinary(file);
+        const idx=pendingFiles.findIndex(f=>f.id===tempId);
+        if(idx>=0){
+          pendingFiles[idx].cloudUrl=url;
+          pendingFiles[idx].dataUrl=isPdf?ev.target.result:url; // PDF 保留本地，圖片用雲端URL
+          pendingFiles[idx].uploading=false;
+          renderFileList();
+        }
+      }catch(err){
+        const idx=pendingFiles.findIndex(f=>f.id===tempId);
+        if(idx>=0){
+          pendingFiles[idx].uploading=false;
+          pendingFiles[idx].uploadError=true;
+          renderFileList();
+        }
+        console.error('Cloudinary upload error:',err);
+      }
     };
     reader.readAsDataURL(file);
   });
 }
+
 function renderFileList(){
   document.getElementById('file-list').innerHTML=pendingFiles.map((f,i)=>{
-    const thumb=f.type==='pdf'?`<div class="file-pdf-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>`:`<img class="file-thumb" src="${f.dataUrl}">`;
+    const previewSrc=f.cloudUrl||f.dataUrl;
+    const thumb=f.type==='pdf'
+      ?`<div class="file-pdf-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>`
+      :`<img class="file-thumb" src="${previewSrc}">`;
     const sz=f.size>1048576?(f.size/1048576).toFixed(1)+'MB':(f.size/1024).toFixed(0)+'KB';
-    return`<div class="file-item">${thumb}<div class="file-info"><div class="file-name">${esc(f.name)}</div><div class="file-size">${sz}</div></div><button class="file-del" onclick="removeFile(${i})">✕</button></div>`;
+    const status=f.uploading?'<span style="font-size:10px;color:var(--accent2)">上傳中…</span>'
+      :f.uploadError?'<span style="font-size:10px;color:var(--danger)">上傳失敗</span>'
+      :f.cloudUrl?'<span style="font-size:10px;color:var(--success)">✓ 已同步</span>':'';
+    return`<div class="file-item">${thumb}<div class="file-info"><div class="file-name">${esc(f.name)}</div><div class="file-size">${sz} ${status}</div></div><button class="file-del" onclick="removeFile(${i})">✕</button></div>`;
   }).join('');
 }
 function removeFile(i){pendingFiles.splice(i,1);renderFileList();formDirty=true}
