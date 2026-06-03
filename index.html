@@ -768,23 +768,40 @@ function handleDetailClick(e){if(e.target===document.getElementById('detail-over
 function openLightbox(src){document.getElementById('lightbox-img').src=src;document.getElementById('lightbox').classList.add('open')}
 function closeLightbox(){document.getElementById('lightbox').classList.remove('open')}
 
-// ── FILE UPLOAD (Cloudinary) ──────────────────────────
+// ── FILE UPLOAD (Cloudinary Signed) ──────────────────
 const CLOUDINARY_CLOUD='dm4r4wyse';
-const CLOUDINARY_PRESET='itai_unsigned'; // 需設定 unsigned upload preset
+const CLOUDINARY_KEY='363197413157253';
+const CLOUDINARY_SECRET='cVFYzcg8RaHeyEDp75LxR5TSXhk';
 
 function onDragOver(e){e.preventDefault();document.getElementById('upload-area').classList.add('drag-over')}
 function onDragLeave(){document.getElementById('upload-area').classList.remove('drag-over')}
 function onDrop(e){e.preventDefault();onDragLeave();handleFiles(e.dataTransfer.files)}
 
+// SHA1 實作（純 JS，不需外部套件）
+async function sha1(str){
+  const buf=await crypto.subtle.digest('SHA-1',new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
 async function uploadToCloudinary(file){
+  const ts=Math.floor(Date.now()/1000).toString();
+  const folder='itai_business';
+  const paramStr=`folder=${folder}&timestamp=${ts}`;
+  const sig=await sha1(paramStr+CLOUDINARY_SECRET);
+
   const fd=new FormData();
   fd.append('file',file);
-  fd.append('upload_preset',CLOUDINARY_PRESET);
-  fd.append('folder','itai_business');
-  const res=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});
+  fd.append('api_key',CLOUDINARY_KEY);
+  fd.append('timestamp',ts);
+  fd.append('signature',sig);
+  fd.append('folder',folder);
+
+  const res=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{
+    method:'POST',body:fd
+  });
   const data=await res.json();
-  if(data.secure_url) return data.secure_url;
-  throw new Error(data.error?.message||'上傳失敗');
+  if(data.secure_url)return data.secure_url;
+  throw new Error(data.error?.message||JSON.stringify(data));
 }
 
 function handleFiles(fileList){
