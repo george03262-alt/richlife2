@@ -190,6 +190,12 @@ main{flex:1;padding:16px;display:flex;flex-direction:column;gap:10px}
 .search-box input{border:none;background:none;color:var(--text);font-size:14px;outline:none;flex:1;min-width:0}
 .search-box input::placeholder{color:var(--text3)}
 .meta-item{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--text2)}
+
+/* TABS */
+.tab-bar{display:flex;gap:4px;margin-top:10px}
+.tab-btn{flex:1;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.7);border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;position:relative}
+.tab-btn.active{background:rgba(255,255,255,0.95);color:var(--accent);border-color:transparent}
+.tab-badge{display:inline-flex;align-items:center;justify-content:center;background:var(--success);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px;font-weight:700}
 </style>
 </head>
 <body>
@@ -203,6 +209,11 @@ main{flex:1;padding:16px;display:flex;flex-direction:column;gap:10px}
       <button class="sort-btn active" id="sort-date" onclick="setSort('date')">📅 完工日</button>
       <button class="sort-btn" id="sort-priority" onclick="setSort('priority')">🔴 優先級</button>
       <button class="sort-btn" id="sort-status" onclick="setSort('status')">📌 狀態</button>
+    </div>
+    <!-- 頁籤 -->
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-active" onclick="setTab('active')">進行中</button>
+      <button class="tab-btn" id="tab-done" onclick="setTab('done')">✓ 完成 <span class="tab-badge" id="done-count"></span></button>
     </div>
   </header>
 
@@ -398,6 +409,7 @@ const OP_KEY='sitetracker_operator';
 const API_KEY='sitetracker_api_url';
 let sites=[];
 let currentSort='date';
+let currentTab='active'; // 'active' | 'done'
 let currentDetailId=null;
 let formDirty=false;
 let pendingFiles=[];
@@ -484,7 +496,7 @@ function fetchAll(){
       setSyncStatus('err','讀取失敗，使用本機資料');
       resolve(false);
     };
-    script.src=url+'?action=getAll&callback='+cbName+'&_='+Date.now();
+    script.src=url+'?action=getAll&operator='+encodeURIComponent(getOperator())+'&callback='+cbName+'&_='+Date.now();
     document.head.appendChild(script);
   });
 }
@@ -541,7 +553,7 @@ function pushSite(site,silent=false){
   console.log('[pushSite] site JSON length:', siteJson.length);
   console.log('[pushSite] site preview:', siteJson.slice(0,200));
   return new Promise(resolve=>{
-    jsonpRequest(url,{action:'save',site:siteNoFiles},
+    jsonpRequest(url,{action:'save',operator:getOperator(),site:siteNoFiles},
       async function(d){
         console.log('[pushSite] response:', JSON.stringify(d));
         if(!silent){
@@ -566,7 +578,7 @@ function pushDelete(id){
   const url=getApiUrl();
   if(!url)return Promise.resolve();
   return new Promise(resolve=>{
-    jsonpRequest(url,{action:'delete',id},
+    jsonpRequest(url,{action:'delete',operator:getOperator(),id},
       function(d){ setSyncStatus('ok','已同步 · '+timeNow()); resolve(d); },
       function(){ setSyncStatus('err','刪除同步失敗'); resolve(null); }
     );
@@ -612,6 +624,13 @@ function setSort(s){
   document.getElementById('sort-'+s).classList.add('active');
   renderList();
 }
+function setTab(t){
+  currentTab=t;
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+t).classList.add('active');
+  renderList();
+}
+
 function sortSites(arr){
   const pMap={high:0,mid:1,low:2};
   const sMap={repair:0,contact:1,pending:2,measured:3,quoted:4,ordered:5,done:6};
@@ -646,12 +665,21 @@ function isOverdue(s){
 
 function renderList(){
   const q=document.getElementById('search-input').value.trim().toLowerCase();
-  let list=sites.filter(s=>!s.deleted&&(!q||s.name.toLowerCase().includes(q)));
+  const op=getOperator();
+  // 全部非刪除的資料
+  const allActive=sites.filter(s=>!s.deleted&&s.status!=='done'&&(!q||s.name.toLowerCase().includes(q)));
+  const allDone=sites.filter(s=>!s.deleted&&s.status==='done'&&(!q||s.name.toLowerCase().includes(q)));
+  // 更新完成頁籤數字
+  const doneCount=sites.filter(s=>!s.deleted&&s.status==='done').length;
+  document.getElementById('done-count').textContent=doneCount>0?doneCount:'';
+  // 依頁籤顯示
+  let list=currentTab==='done'?allDone:allActive;
   list=sortSites(list);
-  document.getElementById('site-count').textContent=sites.filter(s=>!s.deleted).length+' 個案廠';
+  document.getElementById('site-count').textContent=sites.filter(s=>!s.deleted&&s.status!=='done').length+' 個進行中';
   const el=document.getElementById('site-list');
   if(!list.length){
-    el.innerHTML=`<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 21V9"/></svg><p>${q?'查無符合案廠':'尚無案廠，點 + 新增'}</p></div>`;
+    const msg=currentTab==='done'?'尚無完成的案廠':'尚無進行中案廠，點 + 新增';
+    el.innerHTML=`<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 21V9"/></svg><p>${q?'查無符合案廠':msg}</p></div>`;
     return;
   }
   el.innerHTML=list.map(s=>cardHTML(s)).join('');
